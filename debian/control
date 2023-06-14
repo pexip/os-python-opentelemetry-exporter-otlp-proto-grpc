@@ -1,0 +1,24 @@
+Source: python-opentelemetry-exporter-otlp-proto-grpc
+Section: python
+Priority: optional
+Maintainer: Pexip AS <packaging@pexip.com>
+Build-Depends: debhelper-compat (= 13), dh-python, python3-setuptools, python3-all,
+ python3-backoff,
+ python3-googleapis-common-protos,
+ python3-grpcio,
+ python3-opentelemetry-api,
+ python3-opentelemetry-sdk,
+ python3-opentelemetry-proto,
+Standards-Version: 4.5.1
+Homepage: https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-proto-grpc
+Rules-Requires-Root: no
+
+Package: python3-opentelemetry-exporter-otlp-proto-grpc
+Architecture: all
+Depends: ${python3:Depends}, ${misc:Depends}
+Description: OpenTelemetry gRPC support (Python 3)
+ This library allows exporting of data to the OpenTelemetry Collector using the
+ OpenTelemetry Protocol using Protobuf over gRPC.
+ .
+ This package installs the library for Python 3.
+

@@ -1,0 +1,11 @@
+python-opentelemetry-exporter-otlp-proto-grpc (1.12.0rc2-0pexip2) pexip; urgency=medium
+
+  * Bullseye rebuild for ARM64 inclusion
+
+ -- Mark Hymers <mark.hymers@pexip.com>  Mon, 05 Sep 2022 10:35:34 +0100
+
+python-opentelemetry-exporter-otlp-proto-grpc (1.12.0rc2-0pexip1) pexip; urgency=medium
+
+  * Prepare Pexip Packaging
+
+ -- Mark Hymers <mark.hymers@pexip.com>  Thu, 28 Jul 2022 12:30:33 +0100

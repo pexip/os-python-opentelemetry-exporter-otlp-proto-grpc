@@ -1,3 +1,9 @@
+python-opentelemetry-exporter-otlp-proto-grpc (1.18.0-0pexip1) pexip; urgency=medium
+
+  * New upstream release
+
+ -- Huw Jones <huw@pexip.com>  Wed, 14 Jun 2023 11:02:07 +0100
+
 python-opentelemetry-exporter-otlp-proto-grpc (1.12.0rc2-0pexip2) pexip; urgency=medium
 
   * Bullseye rebuild for ARM64 inclusion

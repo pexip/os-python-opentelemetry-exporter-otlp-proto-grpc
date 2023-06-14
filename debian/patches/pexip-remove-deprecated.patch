@@ -40,3 +40,13 @@
  from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
      ExportTraceServiceRequest,
  )
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -25,7 +25,6 @@
+   "Programming Language :: Python :: 3.11",
+ ]
+ dependencies = [
+-  "Deprecated >= 1.2.6",
+   "backoff >= 1.10.0, < 2.0.0; python_version<'3.7'",
+   "backoff >= 1.10.0, < 3.0.0; python_version>='3.7'",
+   "googleapis-common-protos ~= 1.52",

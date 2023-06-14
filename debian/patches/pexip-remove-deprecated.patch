@@ -1,0 +1,42 @@
+--- a/src/opentelemetry/exporter/otlp/proto/grpc/exporter.py
++++ b/src/opentelemetry/exporter/otlp/proto/grpc/exporter.py
+@@ -25,8 +25,6 @@
+ from typing import TypeVar
+ from urllib.parse import urlparse
+ 
+-from deprecated import deprecated
+-
+ from opentelemetry.exporter.otlp.proto.common._internal import (
+     _get_resource_data,
+ )
+@@ -135,18 +133,6 @@
+     return KeyValue(key=key, value=_translate_value(value))
+ 
+ 
+-@deprecated(
+-    version="1.18.0",
+-    reason="Use one of the encoders from opentelemetry-exporter-otlp-proto-common instead",
+-)
+-def get_resource_data(
+-    sdk_resource_scope_data: Dict[SDKResource, ResourceDataT],
+-    resource_class: Callable[..., TypingResourceT],
+-    name: str,
+-) -> List[TypingResourceT]:
+-    return _get_resource_data(sdk_resource_scope_data, resource_class, name)
+-
+-
+ def _load_credential_from_file(filepath) -> ChannelCredentials:
+     try:
+         with open(filepath, "rb") as creds_file:
+--- a/src/opentelemetry/exporter/otlp/proto/grpc/trace_exporter/__init__.py
++++ b/src/opentelemetry/exporter/otlp/proto/grpc/trace_exporter/__init__.py
+@@ -29,9 +29,6 @@
+     _get_credentials,
+     environ_to_compression,
+ )
+-from opentelemetry.exporter.otlp.proto.grpc.exporter import (  # noqa: F401
+-    get_resource_data,
+-)
+ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+     ExportTraceServiceRequest,
+ )

@@ -11,6 +11,7 @@ Build-Depends: debhelper-compat (= 13), dh-python, python3-setuptools, python3-a
  python3-opentelemetry-api,
  python3-opentelemetry-sdk,
  python3-opentelemetry-proto,
+ python3-opentelemetry-exporter-otlp-proto-common,
 Standards-Version: 4.5.1
 Homepage: https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-proto-grpc
 Rules-Requires-Root: no

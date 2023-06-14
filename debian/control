@@ -3,6 +3,8 @@ Section: python
 Priority: optional
 Maintainer: Pexip AS <packaging@pexip.com>
 Build-Depends: debhelper-compat (= 13), dh-python, python3-setuptools, python3-all,
+ pybuild-plugin-pyproject,
+ python3-hatchling,
  python3-backoff,
  python3-googleapis-common-protos,
  python3-grpcio,

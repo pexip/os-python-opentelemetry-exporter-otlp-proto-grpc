@@ -1,6 +1,7 @@
 python-opentelemetry-exporter-otlp-proto-grpc (1.18.0-0pexip1) pexip; urgency=medium
 
   * New upstream release
+  * Fix build
 
  -- Huw Jones <huw@pexip.com>  Wed, 14 Jun 2023 11:02:07 +0100
 

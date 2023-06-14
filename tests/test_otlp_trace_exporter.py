@@ -13,8 +13,11 @@
 # limitations under the License.
 
 import os
+import threading
+import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from logging import WARNING
 from unittest import TestCase
 from unittest.mock import Mock, PropertyMock, patch
 
@@ -24,11 +27,13 @@ from grpc import ChannelCredentials, Compression, StatusCode, server
 
 from opentelemetry.attributes import BoundedAttributes
 from opentelemetry.exporter.otlp.proto.grpc.exporter import (
+    _is_backoff_v2,
     _translate_key_values,
 )
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
     OTLPSpanExporter,
 )
+from opentelemetry.exporter.otlp.proto.grpc.version import __version__
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceRequest,
     ExportTraceServiceResponse,
@@ -217,6 +222,10 @@ class TestOTLPSpanExporter(TestCase):
     def tearDown(self):
         self.server.stop(None)
 
+    def test_exporting(self):
+        # pylint: disable=protected-access
+        self.assertEqual(self.exporter._exporting, "traces")
+
     @patch.dict(
         "os.environ",
         {
@@ -271,21 +280,36 @@ class TestOTLPSpanExporter(TestCase):
         exporter = OTLPSpanExporter()
         # pylint: disable=protected-access
         self.assertEqual(
-            exporter._headers, (("key1", "value1"), ("key2", "VALUE=2"))
+            exporter._headers,
+            (
+                ("key1", "value1"),
+                ("key2", "VALUE=2"),
+                ("user-agent", "OTel-OTLP-Exporter-Python/" + __version__),
+            ),
         )
         exporter = OTLPSpanExporter(
             headers=(("key3", "value3"), ("key4", "value4"))
         )
         # pylint: disable=protected-access
         self.assertEqual(
-            exporter._headers, (("key3", "value3"), ("key4", "value4"))
+            exporter._headers,
+            (
+                ("key3", "value3"),
+                ("key4", "value4"),
+                ("user-agent", "OTel-OTLP-Exporter-Python/" + __version__),
+            ),
         )
         exporter = OTLPSpanExporter(
             headers={"key5": "value5", "key6": "value6"}
         )
         # pylint: disable=protected-access
         self.assertEqual(
-            exporter._headers, (("key5", "value5"), ("key6", "value6"))
+            exporter._headers,
+            (
+                ("key5", "value5"),
+                ("key6", "value6"),
+                ("user-agent", "OTel-OTLP-Exporter-Python/" + __version__),
+            ),
         )
 
     @patch.dict(
@@ -430,9 +454,30 @@ class TestOTLPSpanExporter(TestCase):
     def test_otlp_headers(self, mock_ssl_channel, mock_secure):
         exporter = OTLPSpanExporter()
         # pylint: disable=protected-access
-        self.assertIsNone(exporter._headers, None)
+        # This ensures that there is no other header than standard user-agent.
+        self.assertEqual(
+            exporter._headers,
+            (("user-agent", "OTel-OTLP-Exporter-Python/" + __version__),),
+        )
 
-    @patch("opentelemetry.exporter.otlp.proto.grpc.exporter.expo")
+    @patch("opentelemetry.exporter.otlp.proto.grpc.exporter.backoff")
+    @patch("opentelemetry.exporter.otlp.proto.grpc.exporter.sleep")
+    def test_handles_backoff_v2_api(self, mock_sleep, mock_backoff):
+        # In backoff ~= 2.0.0 the first value yielded from expo is None.
+        def generate_delays(*args, **kwargs):
+            if _is_backoff_v2:
+                yield None
+            yield 1
+
+        mock_backoff.expo.configure_mock(**{"side_effect": generate_delays})
+
+        add_TraceServiceServicer_to_server(
+            TraceServiceServicerUNAVAILABLE(), self.server
+        )
+        self.exporter.export([self.span])
+        mock_sleep.assert_called_once_with(1)
+
+    @patch("opentelemetry.exporter.otlp.proto.grpc.exporter._expo")
     @patch("opentelemetry.exporter.otlp.proto.grpc.exporter.sleep")
     def test_unavailable(self, mock_sleep, mock_expo):
 
@@ -446,7 +491,7 @@ class TestOTLPSpanExporter(TestCase):
         )
         mock_sleep.assert_called_with(1)
 
-    @patch("opentelemetry.exporter.otlp.proto.grpc.exporter.expo")
+    @patch("opentelemetry.exporter.otlp.proto.grpc.exporter._expo")
     @patch("opentelemetry.exporter.otlp.proto.grpc.exporter.sleep")
     def test_unavailable_delay(self, mock_sleep, mock_expo):
 
@@ -886,6 +931,47 @@ class TestOTLPSpanExporter(TestCase):
             .events[0]
             .dropped_attributes_count,
         )
+
+    def test_shutdown(self):
+        add_TraceServiceServicer_to_server(
+            TraceServiceServicerSUCCESS(), self.server
+        )
+        self.assertEqual(
+            self.exporter.export([self.span]), SpanExportResult.SUCCESS
+        )
+        self.exporter.shutdown()
+        with self.assertLogs(level=WARNING) as warning:
+            self.assertEqual(
+                self.exporter.export([self.span]), SpanExportResult.FAILURE
+            )
+            self.assertEqual(
+                warning.records[0].message,
+                "Exporter already shutdown, ignoring batch",
+            )
+
+    def test_shutdown_wait_last_export(self):
+        add_TraceServiceServicer_to_server(
+            TraceServiceServicerUNAVAILABLEDelay(), self.server
+        )
+
+        export_thread = threading.Thread(
+            target=self.exporter.export, args=([self.span],)
+        )
+        export_thread.start()
+        try:
+            # pylint: disable=protected-access
+            self.assertTrue(self.exporter._export_lock.locked())
+            # delay is 4 seconds while the default shutdown timeout is 30_000 milliseconds
+            start_time = time.time()
+            self.exporter.shutdown()
+            now = time.time()
+            self.assertGreaterEqual(now, (start_time + 30 / 1000))
+            # pylint: disable=protected-access
+            self.assertTrue(self.exporter._shutdown)
+            # pylint: disable=protected-access
+            self.assertFalse(self.exporter._export_lock.locked())
+        finally:
+            export_thread.join()
 
 
 def _create_span_with_status(status: SDKStatus):

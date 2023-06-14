@@ -11,12 +11,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import replace
 from logging import getLogger
 from os import environ
-from typing import Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Tuple, Union
+from typing import Sequence as TypingSequence
 from grpc import ChannelCredentials, Compression
+
+from opentelemetry.exporter.otlp.proto.common.metrics_encoder import (
+    encode_metrics,
+)
+from opentelemetry.sdk.metrics._internal.aggregation import Aggregation
 from opentelemetry.exporter.otlp.proto.grpc.exporter import (
     OTLPExporterMixin,
+    _get_credentials,
+    environ_to_compression,
+)
+from opentelemetry.exporter.otlp.proto.grpc.exporter import (  # noqa: F401
     get_resource_data,
 )
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
@@ -25,22 +36,36 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import (
     MetricsServiceStub,
 )
-from opentelemetry.proto.common.v1.common_pb2 import InstrumentationScope
-from opentelemetry.proto.metrics.v1 import metrics_pb2 as pb2
+from opentelemetry.proto.common.v1.common_pb2 import (  # noqa: F401
+    InstrumentationScope,
+)
+from opentelemetry.proto.metrics.v1 import metrics_pb2 as pb2  # noqa: F401
 from opentelemetry.sdk.environment_variables import (
+    OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE,
+    OTEL_EXPORTER_OTLP_METRICS_COMPRESSION,
+    OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+    OTEL_EXPORTER_OTLP_METRICS_HEADERS,
     OTEL_EXPORTER_OTLP_METRICS_INSECURE,
+    OTEL_EXPORTER_OTLP_METRICS_TIMEOUT,
 )
 from opentelemetry.sdk.metrics.export import (
-    Gauge,
-    Histogram,
+    AggregationTemporality,
+    DataPointT,
     Metric,
-    Sum,
-)
-
-from opentelemetry.sdk.metrics.export import (
     MetricExporter,
     MetricExportResult,
     MetricsData,
+    ResourceMetrics,
+    ScopeMetrics,
+)
+from opentelemetry.sdk.metrics.export import (  # noqa: F401
+    Gauge,
+    Histogram as HistogramType,
+    Sum,
+    ExponentialHistogram as ExponentialHistogramType,
+)
+from opentelemetry.exporter.otlp.proto.common._internal.metrics_encoder import (
+    OTLPMetricExporterMixin,
 )
 
 _logger = getLogger(__name__)
@@ -49,7 +74,17 @@ _logger = getLogger(__name__)
 class OTLPMetricExporter(
     MetricExporter,
     OTLPExporterMixin[Metric, ExportMetricsServiceRequest, MetricExportResult],
+    OTLPMetricExporterMixin,
 ):
+    """OTLP metric exporter
+
+    Args:
+        endpoint: Target URL to which the exporter is going to send metrics
+        max_export_batch_size: Maximum number of data points to export in a single request. This is to deal with
+            gRPC's 4MB message size limit. If not set there is no limit to the number of data points in a request.
+            If it is set and the number of data points exceeds the max, the request will be split.
+    """
+
     _result = MetricExportResult
     _stub = MetricsServiceStub
 
@@ -58,9 +93,14 @@ class OTLPMetricExporter(
         endpoint: Optional[str] = None,
         insecure: Optional[bool] = None,
         credentials: Optional[ChannelCredentials] = None,
-        headers: Optional[Sequence] = None,
+        headers: Optional[
+            Union[TypingSequence[Tuple[str, str]], Dict[str, str], str]
+        ] = None,
         timeout: Optional[int] = None,
         compression: Optional[Compression] = None,
+        preferred_temporality: Dict[type, AggregationTemporality] = None,
+        preferred_aggregation: Dict[type, Aggregation] = None,
+        max_export_batch_size: Optional[int] = None,
     ):
 
         if insecure is None:
@@ -68,132 +108,44 @@ class OTLPMetricExporter(
             if insecure is not None:
                 insecure = insecure.lower() == "true"
 
-        super().__init__(
-            **{
-                "endpoint": endpoint,
-                "insecure": insecure,
-                "credentials": credentials,
-                "headers": headers,
-                "timeout": timeout,
-                "compression": compression,
-            }
+        if (
+            not insecure
+            and environ.get(OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE) is not None
+        ):
+            credentials = _get_credentials(
+                credentials, OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE
+            )
+
+        environ_timeout = environ.get(OTEL_EXPORTER_OTLP_METRICS_TIMEOUT)
+        environ_timeout = (
+            int(environ_timeout) if environ_timeout is not None else None
         )
+
+        compression = (
+            environ_to_compression(OTEL_EXPORTER_OTLP_METRICS_COMPRESSION)
+            if compression is None
+            else compression
+        )
+
+        self._common_configuration(preferred_temporality)
+
+        OTLPExporterMixin.__init__(
+            self,
+            endpoint=endpoint
+            or environ.get(OTEL_EXPORTER_OTLP_METRICS_ENDPOINT),
+            insecure=insecure,
+            credentials=credentials,
+            headers=headers or environ.get(OTEL_EXPORTER_OTLP_METRICS_HEADERS),
+            timeout=timeout or environ_timeout,
+            compression=compression,
+        )
+
+        self._max_export_batch_size: Optional[int] = max_export_batch_size
 
     def _translate_data(
         self, data: MetricsData
     ) -> ExportMetricsServiceRequest:
-
-        resource_metrics_dict = {}
-
-        for resource_metrics in data.resource_metrics:
-
-            resource = resource_metrics.resource
-
-            # It is safe to assume that each entry in data.resource_metrics is
-            # associated with an unique resource.
-            scope_metrics_dict = {}
-
-            resource_metrics_dict[resource] = scope_metrics_dict
-
-            for scope_metrics in resource_metrics.scope_metrics:
-
-                instrumentation_scope = scope_metrics.scope
-
-                # The SDK groups metrics in instrumentation scopes already so
-                # there is no need to check for existing instrumentation scopes
-                # here.
-                pb2_scope_metrics = pb2.ScopeMetrics(
-                    scope=InstrumentationScope(
-                        name=instrumentation_scope.name,
-                        version=instrumentation_scope.version,
-                    )
-                )
-
-                scope_metrics_dict[instrumentation_scope] = pb2_scope_metrics
-
-                for metric in scope_metrics.metrics:
-                    pb2_metric = pb2.Metric(
-                        name=metric.name,
-                        description=metric.description,
-                        unit=metric.unit,
-                    )
-
-                    if isinstance(metric.data, Gauge):
-                        for data_point in metric.data.data_points:
-                            pt = pb2.NumberDataPoint(
-                                attributes=self._translate_attributes(
-                                    data_point.attributes
-                                ),
-                                time_unix_nano=data_point.time_unix_nano,
-                            )
-                            if isinstance(data_point.value, int):
-                                pt.as_int = data_point.value
-                            else:
-                                pt.as_double = data_point.value
-                            pb2_metric.gauge.data_points.append(pt)
-
-                    elif isinstance(metric.data, Histogram):
-                        for data_point in metric.data.data_points:
-                            pt = pb2.HistogramDataPoint(
-                                attributes=self._translate_attributes(
-                                    data_point.attributes
-                                ),
-                                time_unix_nano=data_point.time_unix_nano,
-                                start_time_unix_nano=(
-                                    data_point.start_time_unix_nano
-                                ),
-                                count=data_point.count,
-                                sum=data_point.sum,
-                                bucket_counts=data_point.bucket_counts,
-                                explicit_bounds=data_point.explicit_bounds,
-                                max=data_point.max,
-                                min=data_point.min,
-                            )
-                            pb2_metric.histogram.aggregation_temporality = (
-                                metric.data.aggregation_temporality
-                            )
-                            pb2_metric.histogram.data_points.append(pt)
-
-                    elif isinstance(metric.data, Sum):
-                        for data_point in metric.data.data_points:
-                            pt = pb2.NumberDataPoint(
-                                attributes=self._translate_attributes(
-                                    data_point.attributes
-                                ),
-                                start_time_unix_nano=(
-                                    data_point.start_time_unix_nano
-                                ),
-                                time_unix_nano=data_point.time_unix_nano,
-                            )
-                            if isinstance(data_point.value, int):
-                                pt.as_int = data_point.value
-                            else:
-                                pt.as_double = data_point.value
-                            # note that because sum is a message type, the
-                            # fields must be set individually rather than
-                            # instantiating a pb2.Sum and setting it once
-                            pb2_metric.sum.aggregation_temporality = (
-                                metric.data.aggregation_temporality
-                            )
-                            pb2_metric.sum.is_monotonic = (
-                                metric.data.is_monotonic
-                            )
-                            pb2_metric.sum.data_points.append(pt)
-                    else:
-                        _logger.warn(
-                            "unsupported datapoint type %s", metric.point
-                        )
-                        continue
-
-                    pb2_scope_metrics.metrics.append(pb2_metric)
-
-        return ExportMetricsServiceRequest(
-            resource_metrics=get_resource_data(
-                resource_metrics_dict,
-                pb2.ResourceMetrics,
-                "metrics",
-            )
-        )
+        return encode_metrics(data)
 
     def export(
         self,
@@ -202,7 +154,108 @@ class OTLPMetricExporter(
         **kwargs,
     ) -> MetricExportResult:
         # TODO(#2663): OTLPExporterMixin should pass timeout to gRPC
-        return self._export(metrics_data)
+        if self._max_export_batch_size is None:
+            return self._export(data=metrics_data)
+
+        export_result = MetricExportResult.SUCCESS
+
+        for split_metrics_data in self._split_metrics_data(metrics_data):
+            split_export_result = self._export(data=split_metrics_data)
+
+            if split_export_result is MetricExportResult.FAILURE:
+                export_result = MetricExportResult.FAILURE
+
+        return export_result
+
+    def _split_metrics_data(
+        self,
+        metrics_data: MetricsData,
+    ) -> Iterable[MetricsData]:
+        batch_size: int = 0
+        split_resource_metrics: List[ResourceMetrics] = []
+
+        for resource_metrics in metrics_data.resource_metrics:
+            split_scope_metrics: List[ScopeMetrics] = []
+            split_resource_metrics.append(
+                replace(
+                    resource_metrics,
+                    scope_metrics=split_scope_metrics,
+                )
+            )
+            for scope_metrics in resource_metrics.scope_metrics:
+                split_metrics: List[Metric] = []
+                split_scope_metrics.append(
+                    replace(
+                        scope_metrics,
+                        metrics=split_metrics,
+                    )
+                )
+                for metric in scope_metrics.metrics:
+                    split_data_points: List[DataPointT] = []
+                    split_metrics.append(
+                        replace(
+                            metric,
+                            data=replace(
+                                metric.data,
+                                data_points=split_data_points,
+                            ),
+                        )
+                    )
+
+                    for data_point in metric.data.data_points:
+                        split_data_points.append(data_point)
+                        batch_size += 1
+
+                        if batch_size >= self._max_export_batch_size:
+                            yield MetricsData(
+                                resource_metrics=split_resource_metrics
+                            )
+                            # Reset all the variables
+                            batch_size = 0
+                            split_data_points = []
+                            split_metrics = [
+                                replace(
+                                    metric,
+                                    data=replace(
+                                        metric.data,
+                                        data_points=split_data_points,
+                                    ),
+                                )
+                            ]
+                            split_scope_metrics = [
+                                replace(
+                                    scope_metrics,
+                                    metrics=split_metrics,
+                                )
+                            ]
+                            split_resource_metrics = [
+                                replace(
+                                    resource_metrics,
+                                    scope_metrics=split_scope_metrics,
+                                )
+                            ]
+
+                    if not split_data_points:
+                        # If data_points is empty remove the whole metric
+                        split_metrics.pop()
+
+                if not split_metrics:
+                    # If metrics is empty remove the whole scope_metrics
+                    split_scope_metrics.pop()
+
+            if not split_scope_metrics:
+                # If scope_metrics is empty remove the whole resource_metrics
+                split_resource_metrics.pop()
+
+        if batch_size > 0:
+            yield MetricsData(resource_metrics=split_resource_metrics)
 
     def shutdown(self, timeout_millis: float = 30_000, **kwargs) -> None:
-        pass
+        OTLPExporterMixin.shutdown(self, timeout_millis=timeout_millis)
+
+    @property
+    def _exporting(self) -> str:
+        return "metrics"
+
+    def force_flush(self, timeout_millis: float = 10_000) -> bool:
+        return True

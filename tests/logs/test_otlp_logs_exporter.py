@@ -14,17 +14,20 @@
 
 import time
 from concurrent.futures import ThreadPoolExecutor
+from os.path import dirname
 from unittest import TestCase
 from unittest.mock import patch
 
 from google.protobuf.duration_pb2 import Duration
 from google.rpc.error_details_pb2 import RetryInfo
-from grpc import StatusCode, server
+from grpc import ChannelCredentials, Compression, StatusCode, server
 
+from opentelemetry._logs import SeverityNumber
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
     OTLPLogExporter,
 )
 from opentelemetry.exporter.otlp.proto.grpc.exporter import _translate_value
+from opentelemetry.exporter.otlp.proto.grpc.version import __version__
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
     ExportLogsServiceRequest,
     ExportLogsServiceResponse,
@@ -45,12 +48,18 @@ from opentelemetry.proto.resource.v1.resource_pb2 import (
 )
 from opentelemetry.sdk._logs import LogData, LogRecord
 from opentelemetry.sdk._logs.export import LogExportResult
-from opentelemetry.sdk._logs.severity import (
-    SeverityNumber as SDKSeverityNumber,
+from opentelemetry.sdk.environment_variables import (
+    OTEL_EXPORTER_OTLP_LOGS_CERTIFICATE,
+    OTEL_EXPORTER_OTLP_LOGS_COMPRESSION,
+    OTEL_EXPORTER_OTLP_LOGS_ENDPOINT,
+    OTEL_EXPORTER_OTLP_LOGS_HEADERS,
+    OTEL_EXPORTER_OTLP_LOGS_TIMEOUT,
 )
 from opentelemetry.sdk.resources import Resource as SDKResource
 from opentelemetry.sdk.util.instrumentation import InstrumentationScope
 from opentelemetry.trace import TraceFlags
+
+THIS_DIR = dirname(__file__)
 
 
 class LogsServiceServicerUNAVAILABLEDelay(LogsServiceServicer):
@@ -101,7 +110,6 @@ class LogsServiceServicerALREADY_EXISTS(LogsServiceServicer):
 
 class TestOTLPLogExporter(TestCase):
     def setUp(self):
-
         self.exporter = OTLPLogExporter()
 
         self.server = server(ThreadPoolExecutor(max_workers=10))
@@ -117,7 +125,7 @@ class TestOTLPLogExporter(TestCase):
                 span_id=5213367945872657620,
                 trace_flags=TraceFlags(0x01),
                 severity_text="WARNING",
-                severity_number=SDKSeverityNumber.WARN,
+                severity_number=SeverityNumber.WARN,
                 body="Zhengzhou, We have a heaviest rains in 1000 years",
                 resource=SDKResource({"key": "value"}),
                 attributes={"a": 1, "b": "c"},
@@ -133,7 +141,7 @@ class TestOTLPLogExporter(TestCase):
                 span_id=5213367945872657623,
                 trace_flags=TraceFlags(0x01),
                 severity_text="INFO",
-                severity_number=SDKSeverityNumber.INFO2,
+                severity_number=SeverityNumber.INFO2,
                 body="Sydney, Opera House is closed",
                 resource=SDKResource({"key": "value"}),
                 attributes={"custom_attr": [1, 2, 3]},
@@ -149,7 +157,7 @@ class TestOTLPLogExporter(TestCase):
                 span_id=5213367945872657628,
                 trace_flags=TraceFlags(0x01),
                 severity_text="ERROR",
-                severity_number=SDKSeverityNumber.WARN,
+                severity_number=SeverityNumber.WARN,
                 body="Mumbai, Boil water before drinking",
                 resource=SDKResource({"service": "myapp"}),
             ),
@@ -160,6 +168,36 @@ class TestOTLPLogExporter(TestCase):
 
     def tearDown(self):
         self.server.stop(None)
+
+    def test_exporting(self):
+        # pylint: disable=protected-access
+        self.assertEqual(self.exporter._exporting, "logs")
+
+    @patch.dict(
+        "os.environ",
+        {
+            OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "logs:4317",
+            OTEL_EXPORTER_OTLP_LOGS_CERTIFICATE: THIS_DIR
+            + "/../fixtures/test.cert",
+            OTEL_EXPORTER_OTLP_LOGS_HEADERS: " key1=value1,KEY2 = VALUE=2",
+            OTEL_EXPORTER_OTLP_LOGS_TIMEOUT: "10",
+            OTEL_EXPORTER_OTLP_LOGS_COMPRESSION: "gzip",
+        },
+    )
+    @patch(
+        "opentelemetry.exporter.otlp.proto.grpc.exporter.OTLPExporterMixin.__init__"
+    )
+    def test_env_variables(self, mock_exporter_mixin):
+        OTLPLogExporter()
+
+        self.assertTrue(len(mock_exporter_mixin.call_args_list) == 1)
+        _, kwargs = mock_exporter_mixin.call_args_list[0]
+        self.assertEqual(kwargs["endpoint"], "logs:4317")
+        self.assertEqual(kwargs["headers"], " key1=value1,KEY2 = VALUE=2")
+        self.assertEqual(kwargs["timeout"], 10)
+        self.assertEqual(kwargs["compression"], Compression.Gzip)
+        self.assertIsNotNone(kwargs["credentials"])
+        self.assertIsInstance(kwargs["credentials"], ChannelCredentials)
 
     @patch(
         "opentelemetry.exporter.otlp.proto.grpc.exporter.ssl_channel_credentials"
@@ -247,7 +285,14 @@ class TestOTLPLogExporter(TestCase):
             )
             mock_method.reset_mock()
 
-    @patch("opentelemetry.exporter.otlp.proto.grpc.exporter.expo")
+    def test_otlp_headers_from_env(self):
+        # pylint: disable=protected-access
+        self.assertEqual(
+            self.exporter._headers,
+            (("user-agent", "OTel-OTLP-Exporter-Python/" + __version__),),
+        )
+
+    @patch("opentelemetry.exporter.otlp.proto.grpc.exporter._expo")
     @patch("opentelemetry.exporter.otlp.proto.grpc.exporter.sleep")
     def test_unavailable(self, mock_sleep, mock_expo):
 
@@ -261,7 +306,7 @@ class TestOTLPLogExporter(TestCase):
         )
         mock_sleep.assert_called_with(1)
 
-    @patch("opentelemetry.exporter.otlp.proto.grpc.exporter.expo")
+    @patch("opentelemetry.exporter.otlp.proto.grpc.exporter._expo")
     @patch("opentelemetry.exporter.otlp.proto.grpc.exporter.sleep")
     def test_unavailable_delay(self, mock_sleep, mock_expo):
 

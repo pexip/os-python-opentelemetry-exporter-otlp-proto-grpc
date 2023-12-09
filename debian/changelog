@@ -1,3 +1,9 @@
+python-opentelemetry-exporter-otlp-proto-grpc (1.18.0-0pexip7) pexip-bookworm; urgency=medium
+
+  * Bookworm build for product distribution
+
+ -- Mark Hymers <mark.hymers@pexip.com>  Sat, 09 Dec 2023 22:57:38 +0000
+
 python-opentelemetry-exporter-otlp-proto-grpc (1.18.0-0pexip6) pexip-bookworm; urgency=medium
 
   * Initial bookworm build

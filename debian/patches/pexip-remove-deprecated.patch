@@ -1,3 +1,5 @@
+Remove use of deprecated module as it is unnecessary
+
 --- a/src/opentelemetry/exporter/otlp/proto/grpc/exporter.py
 +++ b/src/opentelemetry/exporter/otlp/proto/grpc/exporter.py
 @@ -25,8 +25,6 @@

@@ -1,3 +1,9 @@
+python-opentelemetry-exporter-otlp-proto-grpc (1.18.0-0+pexip25u3) pexip-trixie; urgency=medium
+
+  * Fix up removal of deprecated decorator to avoid removing function.
+
+ -- Mark Hymers <mark.hymers@pexip.com>  Tue, 28 Jul 2026 09:50:07 +0100
+
 python-opentelemetry-exporter-otlp-proto-grpc (1.18.0-0+pexip25u2) pexip-trixie; urgency=medium
 
   * Trixie build for product distribution
